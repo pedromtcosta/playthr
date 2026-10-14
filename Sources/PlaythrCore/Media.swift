@@ -108,7 +108,7 @@ public enum CompositionBuilder {
                 mix.setVolume(project.gain(volume: take.volume, muted: take.muted, solo: take.solo), at: .zero)
                 mixes.append(mix)
             }
-            if !take.hidden {
+            if project.showsVideo(take) {
                 guard let source = try await asset.loadTracks(withMediaType: .video).first,
                       let destination = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
                     throw PlaythrError.message("Cannot load video for \(take.name).")
@@ -132,7 +132,10 @@ public enum CompositionBuilder {
         }
         let mix = AVMutableAudioMix()
         mix.inputParameters = mixes
-        guard !videos.isEmpty else { return BuiltComposition(composition: composition, audioMix: mix, videoComposition: nil) }
+        // Explicitly empty Scenes still export the full audio timeline with a black picture.
+        guard !videos.isEmpty || (project.scenes != nil && project.duration > 0) else {
+            return BuiltComposition(composition: composition, audioMix: mix, videoComposition: nil)
+        }
         let canvas = CGSize(width: 1920, height: 1080)
         // A real, continuous black video source is required. Empty layer instructions alone
         // cannot reliably render the audio-only gaps before, between, or after camera takes.
@@ -143,25 +146,42 @@ public enum CompositionBuilder {
             throw PlaythrError.message("Cannot create the video background.")
         }
         let backgroundRange = try await backgroundSource.load(.timeRange)
-        try backgroundTrack.insertTimeRange(backgroundRange, of: backgroundSource, at: .zero)
-        backgroundTrack.scaleTimeRange(CMTimeRange(start: .zero, duration: backgroundRange.duration), toDuration: timelineDuration)
+        // Supply actual frames across the whole timeline. A stretched still can
+        // preview correctly but export only its first few frames when no takes are visible.
+        var backgroundCursor = CMTime.zero
+        while CMTimeCompare(backgroundCursor, timelineDuration) < 0 {
+            let remaining = CMTimeSubtract(timelineDuration, backgroundCursor)
+            let length = CMTimeMinimum(backgroundRange.duration, remaining)
+            try backgroundTrack.insertTimeRange(CMTimeRange(start: backgroundRange.start, duration: length), of: backgroundSource, at: backgroundCursor)
+            backgroundCursor = CMTimeAdd(backgroundCursor, length)
+        }
         let video = AVMutableVideoComposition()
         video.renderSize = canvas
         video.frameDuration = CMTime(value: 1, timescale: 30)
-        var boundaries = [CMTime.zero, timelineDuration] + videos.flatMap { $0.regions.flatMap { [time($0.start), time($0.end)] } }
+        var boundaries = [CMTime.zero, timelineDuration] +
+            ((project.scenes ?? []).flatMap { [time($0.start), time($0.end)] } +
+             videos.flatMap { $0.regions.flatMap { [time($0.start), time($0.end)] } })
             .filter { CMTimeCompare($0, .zero) > 0 && CMTimeCompare($0, timelineDuration) < 0 }
         boundaries.sort { CMTimeCompare($0, $1) < 0 }
         var instructions: [AVMutableVideoCompositionInstruction] = []
         for (start, end) in zip(boundaries, boundaries.dropFirst()) where CMTimeCompare(end, start) > 0 {
             let midpoint = (start.seconds + end.seconds) / 2
-            let active = videos.filter { $0.regions.contains { $0.start <= midpoint && $0.end > midpoint } }
+            var active = videos.filter { $0.regions.contains { $0.start <= midpoint && $0.end > midpoint } }
                 .sorted { $0.take.layer == $1.take.layer ? $0.take.id.uuidString < $1.take.id.uuidString : $0.take.layer < $1.take.layer }
-            let positions = project.layout.placements(count: active.count)
+            var positions: [Placement]
+            if project.scenes != nil {
+                let sceneVideos = project.scene(at: midpoint)?.videos.filter(\.visible) ?? []
+                let sources = Dictionary(uniqueKeysWithValues: active.map { ($0.take.id, $0) })
+                active = sceneVideos.compactMap { sources[$0.takeID] }
+                positions = sceneVideos.filter { sources[$0.takeID] != nil }.map(\.placement)
+            } else {
+                positions = project.layout == .custom ? active.map { $0.take.placement } : project.layout.placements(count: active.count)
+            }
             let instruction = AVMutableVideoCompositionInstruction()
             instruction.timeRange = CMTimeRange(start: start, end: end)
             instruction.backgroundColor = CGColor(red: 0, green: 0, blue: 0, alpha: 1)
             let foregrounds: [AVMutableVideoCompositionLayerInstruction] = active.enumerated().map { index, source in
-                let placement = project.layout == .custom ? source.take.placement : positions[index]
+                let placement = positions[index]
                 let rect = CGRect(x: placement.x * canvas.width, y: placement.y * canvas.height,
                                   width: placement.width * canvas.width, height: placement.height * canvas.height)
                 let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: source.track)
@@ -203,7 +223,7 @@ public enum CompositionBuilder {
     public static func time(_ seconds: Double) -> CMTime { CMTime(seconds: seconds, preferredTimescale: 60000) }
 
     public static func export(_ built: BuiltComposition, to url: URL, progress: @escaping (Float) -> Void) async throws {
-        guard built.videoComposition != nil else { throw PlaythrError.message("Record at least one visible video take before exporting.") }
+        guard built.videoComposition != nil else { throw PlaythrError.message("Add media to the timeline before exporting video.") }
         guard !FileManager.default.fileExists(atPath: url.path) else { throw PlaythrError.message("Choose a new export filename; an existing file will not be overwritten.") }
         guard let session = AVAssetExportSession(asset: built.composition, presetName: AVAssetExportPreset1920x1080) else {
             throw PlaythrError.message("The video exporter is unavailable.")
@@ -238,7 +258,8 @@ private final class ExportCancellation: @unchecked Sendable {
 
 private enum BlackBackground {
     static func ensure(in directory: URL) async throws -> URL {
-        let url = directory.appendingPathComponent(".background.mov")
+        // Use a new cache name so older two-frame backgrounds are not reused.
+        let url = directory.appendingPathComponent(".background-30fps.mov")
         if FileManager.default.fileExists(atPath: url.path) { return url }
         let temporary = directory.appendingPathComponent(".background-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: temporary) }
@@ -259,7 +280,7 @@ private enum BlackBackground {
         CVPixelBufferLockBaseAddress(pixel, [])
         if let address = CVPixelBufferGetBaseAddress(pixel) { memset(address, 0, CVPixelBufferGetBytesPerRow(pixel) * 18) }
         CVPixelBufferUnlockBaseAddress(pixel, [])
-        for index in 0..<2 {
+        for index in 0..<30 {
             var attempts = 0
             while !input.isReadyForMoreMediaData && attempts < 200 {
                 try await Task.sleep(nanoseconds: 10_000_000); attempts += 1

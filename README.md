@@ -31,7 +31,7 @@ The debug bundle is `.build/Playthr-Debug.app`, with a separate app identifier s
 5. Click the timeline ruler or enter a position in **Go to** (seconds). Set the count-in **BPM** and number of **counts**, then press **Record** (`R`). You hear that many metronome clicks through **Playback output**; the backing and recording begin on the next beat. For example, 4 counts at 120 BPM take 2 seconds. Set counts to **0** to skip the count-in. Tempo and count are remembered across launches.
 6. Press **Stop & save** or Space. The take is saved at the starting playhead position; the playhead returns there for review or another pass. Record another guitar at the same position to layer parts.
 7. Review with Space. Click a take to inspect it, drag it to move it, or enter exact start/trim/length values. Audio and video remain linked. Set **Audio correction** to compensate for your audio route's latency without moving the video.
-8. Choose a video arrangement, then **Export video**. Export creates a 1920 × 1080, 30 fps MP4 with the backing tracks and all audible takes. Sections without visible takes are black. The full project duration is exported.
+8. Select a **Scene** in the timeline to arrange its videos, then **Export video**. Export creates a 1920 × 1080, 30 fps MP4 with the backing tracks and all audible takes. Sections without visible takes are black. The full project duration is exported.
 
 ## Getting the Neural DSP tone into the recorder
 
@@ -58,9 +58,26 @@ The count-in supports 20–400 BPM and 0–64 beats, with a higher first click. 
 
 Your interface, output buffers and Neural DSP can still add latency. Record a short passage with a clear beat and adjust **Audio correction** after listening. Negative milliseconds bring recorded audio earlier; positive milliseconds delay it. This adjustment trims the affected edge of the audio within the take's video interval. The setup correction applies to new takes; each saved take has its own correction. There is no automatic latency measurement or calibration claim.
 
-**Side by side**, **Top & bottom**, and **Picture in picture** adapt to the takes active at each point. A single active take fills the frame. In picture-in-picture mode, higher layers become insets; **Bring to front / inset** changes that order. **Custom positions** uses the selected take's position and size, normalized to the output canvas. Images fit inside their rectangles with their original aspect ratio. There are no animation keyframes, effects or transitions yet.
+The inspector has **Record**, **Scene**, and **Take** tabs. Recording setup stays in Record; selecting a take opens its timing/audio controls; selecting a Scene opens the arrangement for that time range.
 
-Every track header has a **trash button**. It removes a backing track or a recorded take (its linked audio and video) from the timeline and saves immediately. **⌘Z** restores it; **⇧⌘Z** redoes the deletion. Deletion, trim and position changes are non-destructive: source media stays in the project. Undo history is available within the current session and is not persisted across launches. Mix/layout changes pause playback while rebuilding the preview. Mute and Solo affect audio only; **Show video** controls the image separately.
+Every track header has a **trash button**. It removes a backing track or a recorded take (its linked audio and video) from the timeline and saves immediately. **⌘Z** restores it; **⇧⌘Z** redoes the deletion. Deletion, trim and position changes are non-destructive: source media stays in the project. Undo history is available within the current session and is not persisted across launches. Mix/layout changes pause playback while rebuilding the preview. Mute and Solo affect audio only; Scene visibility controls the image separately.
+
+### Scenes
+
+A Scene is a time range with its own video selection, layout, and stacking order. The blue Scene lane appears above the media tracks. Scenes never overlap and can have gaps between them; the tracks underneath keep their own timing and audio mix. Sections without a Scene show black video while their audio continues, in both preview and export.
+
+- **Automatic creation:** saving a new take creates a Scene for its recorded range, with a default arrangement of the videos that overlap it. That interval replaces the covered portions of existing Scenes. Portions to the left and right keep their arrangements. This one operation handles nested recordings, partial overlaps, and recordings that span multiple Scenes.
+- **Manual creation:** drag across the timeline ruler (or enter From/to), then click **Create Scene**. A new Scene starts with the default arrangement set in **Record → New Scenes**; it can combine several existing Scenes into one range. This does not cut or move media.
+- **Boundaries:** click a Scene, then drag its left/right edge or enter exact From/To seconds in its inspector. Expanding takes time from neighboring Scenes; shrinking gives time back to adjacent neighbors while preserving their layouts. If there is no adjacent neighbor, the released portion becomes a gap without video.
+- **Deletion:** click the trash button beside the Scene name in its inspector, or right-click its timeline block and choose **Delete Scene**. Its interval becomes a gap without video; media, audio, other Scenes, and the timeline duration stay intact. Deletion autosaves, **⌘Z** restores the Scene, and gaps remain after reopening or editing the project. You can delete every Scene and still play or export the audio with a black picture. Select a gap and choose **Create Scene** to show its videos again.
+- **Arrangement:** choose **Side by side**, **Top & bottom**, or **Picture in picture**. Click a video frame in the paused preview, drag it to move, and drag its lower-right handle to resize. The outline follows your gesture; releasing commits the edit and updates the picture. Exact Left/Top/Width/Height percentages are available in the inspector. Videos fit their rectangles without changing aspect ratio.
+- **Visibility and layers:** the Scene's video list is ordered front to back. Uncheck a video to omit its picture only in that Scene; its audio keeps playing. Select a video and use **Back/Forward** to change its order. In picture-in-picture, the backmost video fills the frame and the others become insets. **Full frame** expands the selected video's rectangle; it does not hide other layers.
+
+For a five-minute take followed by a recording from 2:10 to 3:05, the Scene ranges become 0:00–2:10, 2:10–3:05, and 3:05–5:00. A later recording from 2:50 to 3:50 replaces that range, producing boundaries at 0:00, 2:10, 2:50, 3:50, and 5:00.
+
+A Scene can include a video whose footage covers only part of its range. That video appears only where recorded material exists; its position is reserved throughout the Scene, so other videos do not jump or resize when it ends. A clock icon marks videos without footage at the playhead. Moving/trimming a take keeps Scene boundaries and existing video selections in place; use the Scene's checkboxes to include a take in another Scene. All-track **Close gap** cuts shift Scene boundaries along with the media.
+
+Scenes autosave and support Undo/Redo. Older projects are converted in memory to Scenes matching their existing picture, and the next edit saves format version 3. Source recordings remain intact. The same composition renders the Scene arrangements in preview and export. There are no animation keyframes, effects, or transitions yet.
 
 ### Cut a time range
 
@@ -70,13 +87,13 @@ Every track header has a **trash button**. It removes a backing track or a recor
 
 The remaining pieces stay on the same track with the same volume, solo/mute, audio correction and video layout. Recorded audio and video are cut together. Cuts affect playback and export, save automatically, and can be undone/redone with **⌘Z / ⇧⌘Z**. Cutting an entire track's content leaves its empty row; use its trash button to remove the row. Clear a time selection with **×**. Turn off Range tool to drag a recorded take and move its remaining pieces together.
 
-After cutting a take into pieces, use the range controls for further trimming. The original source file stays intact. Existing projects load as before; the first cut saves version 2 of the project format so older builds cannot accidentally ignore the edits.
+After cutting a take into pieces, use the range controls for further trimming. The original source file stays intact. The project format is versioned so older builds cannot silently ignore range edits or Scenes.
 
 ## Project files and recovery
 
 ```text
 Song.playthr/
-  project.json             # versioned timeline, mix, waveform peaks and placements
+  project.json             # versioned timeline, scenes, mix, waveforms and placements
   Media/
     <uuid>.wav             # copied backing tracks (original format preserved)
     <uuid>.mov             # camera H.264 + stereo 48 kHz float PCM audio
@@ -93,7 +110,7 @@ The app reports capture/write failures and writer backpressure drops. Keep enoug
 
 - `PlaythrCore`: project validation/storage, Sound Razor import, waveform analysis, capture writer, shared preview/export composition.
 - `Playthr`: SwiftUI studio, AVFoundation capture devices, Core Audio output selection, transport and project workflow.
-- A shared composition builder drives preview and export. Timeline interval boundaries determine active videos; per-take placement and layer order support future editing features. The video instructions and background preserve the exact media duration, including fractional audio sample boundaries, and are validated before playback/export.
+- A shared composition builder drives preview and export. Media and Scene boundaries determine active videos; each Scene supplies visibility, rectangles, and layer order. The video instructions and background preserve the exact media duration, including fractional audio sample boundaries, and are validated before playback/export.
 - Tests cover portable save/load, missing media, unsafe paths, invalid trims, Sound Razor split metadata, solo/mute, offsets and layout geometry. Count-in tests measure generated clicks at integer and fractional tempos, check the recording boundary and zero-count setting, and verify cancellation leaves no empty take. Integration tests generate real audio/video through the recorder, export overlapping takes, and check rendered pixels, duration and audio presence, including gaps and picture-in-picture layering. A playback regression covers 44.1 kHz backing audio ending between timeline ticks and camera frames starting after the audio.
 
 Automated tests use synthetic media and do not activate your camera or microphone. Your webcam, USB/BlackHole route, actual output latency and a long recording still need a hardware acceptance pass. The first release is a focused local prototype, not a general-purpose DAW or video editor.
@@ -103,7 +120,9 @@ For a repeatable visual smoke test, preserve an integration-test project in a **
 ```sh
 PLAYTHR_TEST_ARTIFACTS="$PWD/TestArtifacts" swift test --disable-sandbox --filter MediaTests.testRecordingAndOverlappingVideoExport
 bash scripts/build.sh debug
-.build/Playthr-Debug.app/Contents/MacOS/Playthr --ui-smoke-project "$PWD/TestArtifacts/Session.playthr" --ui-smoke-output "$PWD/TestArtifacts/studio.png" --ui-smoke-test-delete
+open -n -F -W .build/Playthr-Debug.app \
+  --stdout "$PWD/TestArtifacts/smoke.log" --stderr "$PWD/TestArtifacts/smoke-errors.log" \
+  --args --ui-smoke-project "$PWD/TestArtifacts/Session.playthr" --ui-smoke-output "$PWD/TestArtifacts/studio.png" --ui-smoke-test-delete
 ```
 
 This opens the studio, loads generated media, plays it muted, verifies native video rendering, captures its own window content, and exits. `--ui-smoke-test-delete` exercises delete/autosave/undo/redo on each track and restores the original timeline; use this flag on a disposable test project. The check does not connect capture devices. A normal release build does not include this command-line test behavior.
@@ -111,3 +130,7 @@ This opens the studio, loads generated media, plays it muted, verifies native vi
 Add `--ui-smoke-test-count-in` to check live metronome output: it audibly plays four clicks at 120 BPM, checks the rendered beat timing and selected output device, then cancels another count-in after its first click. It also verifies that zero counts bypass the audio engine. This optional check uses speakers/headphones, with no camera or microphone access.
 
 Add `--ui-smoke-test-cuts` on a disposable project with backing audio and a take to verify all six combinations of track scope and gap behavior, autosave, rebuilt previews, undo/redo and source preservation. It restores the original timeline after capturing the window. Automated range tests also check repeated edits and old/new project formats, then export real media to verify the removed picture and sound and the shifted source content.
+
+Add `--ui-smoke-test-scenes` on a disposable project with two overlapping takes to verify Scene creation, selection, resizing, local visibility, custom placement, stacking order, autosave, and Undo/Redo. Native mouse events also verify frame dragging and corner resizing. It restores the initial project after capturing the Scene editor. Core tests cover the recording overlap examples, interval partitioning, shrinking/expanding, cuts and migration. Render tests compare scene-specific side-by-side, stacked, inset, hidden, and custom-positioned video in both preview and MP4 export, including preserved guitar audio and videos ending inside a Scene.
+
+Add `--ui-smoke-test-delete-scenes` on a disposable project with Scenes to check deletion, preserved gaps and audio tracks, cleared selection, autosave/reload, Undo/Redo, and native playback with every Scene removed. It restores the original project after capturing the window. Render tests also verify black gaps and a completely black timeline in preview and exported MP4, with the full audio mix preserved.

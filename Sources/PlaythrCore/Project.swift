@@ -96,6 +96,8 @@ public struct Project: Codable, Equatable, Sendable {
     public var tracks: [BackingTrack] = []
     public var takes: [Take] = []
     public var layout = VideoLayout.grid
+    /// Nil loads legacy projects with their original global arrangement.
+    public var scenes: [VideoScene]?
     public var masterVolume: Double = 0.8
     public var duration: Double { max(tracks.map(\.end).max() ?? 0, takes.map(\.end).max() ?? 0) }
     public var hasSolo: Bool { tracks.contains(where: \.solo) || takes.contains(where: \.solo) }
@@ -105,7 +107,7 @@ public struct Project: Codable, Equatable, Sendable {
     }
 
     public func validate() throws {
-        guard (1...2).contains(schemaVersion) else { throw PlaythrError.message("This project uses an unsupported version (\(schemaVersion)).") }
+        guard (1...3).contains(schemaVersion) else { throw PlaythrError.message("This project uses an unsupported version (\(schemaVersion)).") }
         guard schemaVersion >= 2 || (!tracks.contains { $0.regions != nil } && !takes.contains { $0.regions != nil }) else {
             throw PlaythrError.message("Range edits require project format version 2.")
         }
@@ -135,6 +137,7 @@ public struct Project: Codable, Equatable, Sendable {
                 throw PlaythrError.message("Invalid timing or layout for take: \(take.name).")
             }
         }
+        try validateScenes()
     }
 }
 

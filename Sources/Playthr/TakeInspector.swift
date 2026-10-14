@@ -31,19 +31,8 @@ struct TakeInspector: View {
             numberField("Audio correction", value: take.audioOffset * 1000, suffix: "ms") { value in
                 model.editTake(take.id) { $0.audioOffset = max(-2000, min(2000, value)) / 1000 }
             }
-            Toggle("Show video", isOn: Binding(get: { !take.hidden }, set: { value in model.editTake(take.id) { $0.hidden = !value } }))
-                .font(.system(size: 11))
-            Button("Bring to front / inset") {
-                let front = (model.project.takes.map(\.layer).max() ?? 0) + 1
-                model.editTake(take.id) { $0.layer = front }
-            }.buttonStyle(.bordered)
-            if model.project.layout == .custom {
-                sectionLabel("POSITION & SIZE")
-                placementSlider("Left", value: take.placement.x) { value in model.editTake(take.id) { $0.placement.x = value } }
-                placementSlider("Top", value: take.placement.y) { value in model.editTake(take.id) { $0.placement.y = value } }
-                placementSlider("Width", value: take.placement.width, min: 0.05) { value in model.editTake(take.id) { $0.placement.width = value } }
-                placementSlider("Height", value: take.placement.height, min: 0.05) { value in model.editTake(take.id) { $0.placement.height = value } }
-            }
+            Text("Select a Scene to arrange or hide this video for that portion of the timeline.")
+                .font(.system(size: 11)).foregroundStyle(Theme.muted)
             HStack {
                 if take.regions == nil {
                     Button("Reset trim") { model.editTake(take.id) { $0.sourceIn = 0; $0.duration = $0.sourceDuration } }
@@ -60,12 +49,6 @@ struct TakeInspector: View {
             Text(title).font(.system(size: 11)); Spacer()
             CommitNumber(value: value, set: set).frame(width: 64)
             Text(suffix).font(.system(size: 10)).foregroundStyle(Theme.muted).frame(width: 22, alignment: .leading)
-        }
-    }
-    private func placementSlider(_ title: String, value: Double, min: Double = 0, set: @escaping (Double) -> Void) -> some View {
-        HStack {
-            Text(title).font(.system(size: 11)).frame(width: 40, alignment: .leading)
-            Slider(value: Binding(get: { value }, set: set), in: min...1)
         }
     }
 }

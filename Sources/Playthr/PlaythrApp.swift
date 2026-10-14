@@ -5,6 +5,13 @@ import AppKit
 struct PlaythrApp: App {
     @StateObject private var model = SessionModel()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    init() {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--ui-smoke-output") {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 45) { print("UI smoke test timed out."); exit(11) }
+        }
+        #endif
+    }
     var body: some Scene {
         Window("Playthr", id: "studio") {
             StudioView(model: model)
@@ -30,7 +37,7 @@ struct PlaythrApp: App {
             CommandMenu("Session") {
                 Button("Import Sound Razor Song…") { model.importAudio(soundRazor: true) }.disabled(!model.hasProject || model.locked)
                 Button("Import Audio Files…") { model.importAudio(soundRazor: false) }.keyboardShortcut("i").disabled(!model.hasProject || model.locked)
-                Button("Export Video…", action: model.exportVideo).keyboardShortcut("e").disabled(!model.hasVisibleVideo || model.locked)
+                Button("Export Video…", action: model.exportVideo).keyboardShortcut("e").disabled(!model.canExportVideo || model.locked)
                 Divider()
                 Button("Recover Unlisted Takes", action: model.recoverTakes).disabled(!model.hasProject || model.locked)
             }

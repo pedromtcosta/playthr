@@ -4,11 +4,16 @@ import Combine
 import UniformTypeIdentifiers
 import PlaythrCore
 
+enum InspectorTab: String, CaseIterable { case record = "Record", scene = "Scene", take = "Take" }
+
 @MainActor
 final class SessionModel: ObservableObject {
     @Published private(set) var project = Project()
     @Published private(set) var store: ProjectStore?
     @Published var selectedTrackID: UUID?
+    @Published var selectedSceneID: UUID?
+    @Published var selectedSceneVideoID: UUID?
+    @Published var inspectorTab = InspectorTab.record
     @Published var selectedRange: TimelineRange?
     @Published var isSelectingRange = false
     @Published var cutAllTracks = false
@@ -49,9 +54,15 @@ final class SessionModel: ObservableObject {
     private var redoHistory: [Project] = []
     var locked: Bool { isRecording || busy != nil }
     var hasProject: Bool { store != nil }
-    var hasVisibleVideo: Bool { project.takes.contains { !$0.hidden && !$0.playbackRegions.isEmpty } }
+    var hasVisibleVideo: Bool { project.takes.contains { project.showsVideo($0) } }
+    var canExportVideo: Bool { hasProject && project.duration > 0 && (project.scenes != nil || hasVisibleVideo) }
     var timelineDuration: Double { max(30, project.duration + 3, playhead + 3) }
     var selectedTake: Take? { project.takes.first { $0.id == selectedTrackID } }
+    var selectedScene: VideoScene? { project.scenes?.first { $0.id == selectedSceneID } }
+    var canCreateScene: Bool { !locked && hasProject && selectedRange != nil }
+    var isEditingScene: Bool {
+        inspectorTab == .scene && !locked && !isPlaying && (selectedScene?.contains(playhead) ?? false)
+    }
     var selectedTrackName: String? {
         project.tracks.first { $0.id == selectedTrackID }?.name ?? selectedTake?.name
     }
@@ -164,7 +175,9 @@ final class SessionModel: ObservableObject {
 
     private func setProject(_ newProject: Project, store newStore: ProjectStore) {
         pause(); rebuildTask?.cancel(); player.replaceCurrentItem(with: nil)
-        store = newStore; project = newProject; selectedTrackID = nil; selectedRange = nil; cutAllTracks = false; playhead = 0
+        var migrated = newProject; migrated.enableScenes()
+        store = newStore; project = migrated; selectedTrackID = nil; selectedRange = nil; cutAllTracks = false; playhead = 0
+        selectedSceneID = nil; selectedSceneVideoID = nil; inspectorTab = .record
         undoHistory = []; redoHistory = []
         scheduleRebuild()
     }
@@ -230,6 +243,80 @@ final class SessionModel: ObservableObject {
     func selectTrack(_ id: UUID) {
         guard !locked, project.tracks.contains(where: { $0.id == id }) || project.takes.contains(where: { $0.id == id }) else { return }
         selectedTrackID = id; cutAllTracks = false
+        if selectedTake != nil { inspectorTab = .take }
+    }
+
+    func selectScene(_ id: UUID, seekToStart: Bool = true) {
+        guard !locked, let scene = project.scenes?.first(where: { $0.id == id }) else { return }
+        selectedSceneID = id; inspectorTab = .scene
+        selectedSceneVideoID = scene.videos.last(where: \.visible)?.takeID
+        if seekToStart { seek(scene.start) }
+    }
+
+    func createSceneFromSelection() {
+        guard canCreateScene, let range = selectedRange else { return }
+        pause()
+        do {
+            var draft = project
+            let id = try draft.createScene(in: range)
+            try commit(draft); selectedRange = nil; selectScene(id)
+            message = "Scene created. Arrange its videos in the preview or Scene inspector. ⌘Z to undo."
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func resizeScene(_ id: UUID, start: Double, end: Double) {
+        guard !locked, let range = TimelineRange(start: max(0, start), end: min(project.duration, end)) else { return }
+        do {
+            var draft = project; try draft.resizeScene(id, to: range); try commit(draft)
+            selectScene(id, seekToStart: false)
+            if !(selectedScene?.contains(playhead) ?? false) { seek(range.start) }
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func deleteScene(_ id: UUID) {
+        guard !locked else { return }
+        pause()
+        do {
+            var draft = project
+            guard try draft.deleteScene(id) else { return }
+            try commit(draft)
+            message = "Scene deleted. Its range now has no video; audio keeps playing. ⌘Z to undo."
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func editScene(_ id: UUID, _ action: (inout VideoScene) -> Void) {
+        edit { project in
+            if let index = project.scenes?.firstIndex(where: { $0.id == id }) { action(&project.scenes![index]) }
+        }
+    }
+
+    func setSceneVideoVisible(_ takeID: UUID, sceneID: UUID, visible: Bool) {
+        editScene(sceneID) { scene in
+            if let index = scene.videos.firstIndex(where: { $0.takeID == takeID }) { scene.videos[index].visible = visible }
+            else { scene.videos.append(SceneVideo(takeID: takeID, visible: visible, placement: Placement(x: 0.65, y: 0.65, width: 0.3, height: 0.3))) }
+            scene.applyLayout(scene.layout)
+        }
+        selectedSceneVideoID = takeID
+    }
+
+    func setScenePlacement(_ placement: Placement, takeID: UUID, sceneID: UUID) {
+        guard [placement.x, placement.y, placement.width, placement.height].allSatisfy(\.isFinite) else { return }
+        var p = placement
+        p.width = min(1, max(0.01, p.width)); p.height = min(1, max(0.01, p.height))
+        p.x = min(1 - p.width, max(0, p.x)); p.y = min(1 - p.height, max(0, p.y))
+        editScene(sceneID) { scene in
+            guard let index = scene.videos.firstIndex(where: { $0.takeID == takeID }) else { return }
+            scene.videos[index].placement = p; scene.layout = .custom
+        }
+    }
+
+    func reorderSceneVideo(_ takeID: UUID, sceneID: UUID, forward: Bool) {
+        editScene(sceneID) { scene in
+            guard let index = scene.videos.firstIndex(where: { $0.takeID == takeID }) else { return }
+            let next = index + (forward ? 1 : -1)
+            guard scene.videos.indices.contains(next) else { return }
+            scene.videos.swapAt(index, next); scene.applyLayout(scene.layout)
+        }
     }
 
     func selectRange(from: Double, to: Double, trackID: UUID? = nil) {
@@ -283,9 +370,13 @@ final class SessionModel: ObservableObject {
     }
     private func commit(_ draft: Project, history: Bool = true) throws {
         guard let store else { return }
+        var draft = draft; draft.reconcileScenes()
+        guard draft != project else { return }
         try store.save(draft)
         if history { undoHistory.append(project); if undoHistory.count > 80 { undoHistory.removeFirst() }; redoHistory = [] }
         project = draft
+        if !project.takes.contains(where: { $0.id == selectedTrackID }) && !project.tracks.contains(where: { $0.id == selectedTrackID }) { selectedTrackID = nil }
+        if !((project.scenes ?? []).contains { $0.id == selectedSceneID }) { selectedSceneID = nil; selectedSceneVideoID = nil }
         scheduleRebuild()
     }
     func undo() {
@@ -426,9 +517,10 @@ final class SessionModel: ObservableObject {
                                 layer: (project.takes.map(\.layer).max() ?? -1) + 1)
                 take.audioOffset = defaultAudioOffsetMS / 1000
                 take.peaks = (try await Media.inspectAudio(url)).peaks
-                var draft = project; draft.takes.append(take)
+                var draft = project; let sceneID = try draft.addTake(take)
                 try commit(draft)
                 selectedTrackID = take.id; playhead = start
+                selectedSceneID = sceneID; selectedSceneVideoID = take.id; inspectorTab = .scene
                 message = warning ?? "Take saved. Press Play to review, or Record to layer another guitar."
             } catch {
                 self.error = "\(error.localizedDescription) Any captured file remains in the project’s Media folder. Use Recover takes if it is readable."
@@ -459,7 +551,7 @@ final class SessionModel: ObservableObject {
     }
 
     func exportVideo() {
-        guard !locked, let store, hasVisibleVideo else { return }
+        guard !locked, let store, canExportVideo else { return }
         pause()
         let panel = NSSavePanel()
         panel.title = "Export combined playthrough"
@@ -493,7 +585,7 @@ final class SessionModel: ObservableObject {
                     var take = Take(name: "Recovered take \(recovered + 1)", file: "Media/" + url.lastPathComponent,
                                     start: playhead, duration: duration, layer: draft.takes.count)
                     take.peaks = (try? await Media.inspectAudio(url))?.peaks ?? []
-                    draft.takes.append(take); recovered += 1
+                    try draft.addTake(take); recovered += 1
                 }
                 if recovered > 0 { try commit(draft) }
                 message = "Recovered \(recovered) take(s) at the playhead. \(unreadable) unfinished movie(s) could not be read; their files were kept."

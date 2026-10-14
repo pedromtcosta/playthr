@@ -71,7 +71,11 @@ extension Project {
             }
         }
         // Older builds must not silently ignore the pieces and play deleted material.
-        if changed { schemaVersion = 2 }
+        if changed {
+            schemaVersion = max(schemaVersion, 2)
+            if trackID == nil && closeGap { rippleScenes(range) }
+            reconcileScenes()
+        }
         try validate()
         return changed
     }

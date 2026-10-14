@@ -15,6 +15,9 @@ struct TimelineView: View {
                 Toggle(isOn: $model.isSelectingRange) { Label("Range tool", systemImage: "rectangle.dashed") }
                     .toggleStyle(.button).controlSize(.small).disabled(model.locked || !model.hasProject)
                     .help("Drag on a track to select a range. Turn off to move takes. You can always drag on the ruler to select.")
+                Button { model.createSceneFromSelection() } label: { Label("Create Scene", systemImage: "rectangle.split.3x1") }
+                    .controlSize(.small).disabled(!model.canCreateScene)
+                    .help("Create a Scene from the selected time range. Its video arrangement is independent of other Scenes.")
                 Spacer()
                 Text("Go to").font(.system(size: 10)).foregroundStyle(Theme.muted)
                 CommitNumber(value: model.playhead, set: model.seek).frame(width: 76).disabled(model.locked)
@@ -36,6 +39,8 @@ struct TimelineView: View {
                         VStack(spacing: 0) {
                             HStack { Text("TRACK / MIX"); Spacer() }.font(.system(size: 9, weight: .medium)).tracking(1)
                                 .foregroundStyle(Theme.muted).padding(.horizontal, 16).frame(height: 28)
+                            HStack { sectionLabel("SCENES"); Spacer(); Text("\(model.project.scenes?.count ?? 0)").font(.system(size: 10)).foregroundStyle(.cyan) }
+                                .padding(.horizontal, 16).frame(height: 38)
                             ForEach(model.project.tracks) { track in
                                 trackHeader(name: track.name, icon: "waveform", color: Theme.accent, volume: track.volume,
                                             muted: track.muted, solo: track.solo, selected: model.selectedTrackID == track.id,
@@ -66,6 +71,16 @@ struct TimelineView: View {
                         ScrollView(.horizontal) {
                             VStack(spacing: 0) {
                                 ruler(width: width, scale: scale)
+                                ZStack(alignment: .leading) {
+                                    Theme.panel
+                                    ForEach(Array((model.project.scenes ?? []).enumerated()), id: \.element.id) { index, scene in
+                                        SceneBlock(model: model, scene: scene, number: index + 1, scale: scale)
+                                    }
+                                    if (model.project.scenes ?? []).isEmpty {
+                                        Text("No Scenes · audio only. Record a take, or select a range and create a Scene.")
+                                            .font(.system(size: 10)).foregroundStyle(Theme.muted).padding(.leading, 8)
+                                    }
+                                }.frame(width: width, height: 38).coordinateSpace(name: "sceneTimeline").clipped()
                                 ForEach(model.project.tracks) { track in
                                     lane(width: width) {
                                         ForEach(track.playbackRegions) { region in
@@ -196,7 +211,7 @@ struct TimelineView: View {
         }.frame(width: width, height: 28).background(Theme.panel)
             .contentShape(Rectangle())
             .gesture(rangeGesture(scale: scale))
-            .help("Click to seek; drag to select a time range for cutting.")
+            .help("Click to seek; drag to select a time range for cutting or creating a Scene.")
     }
 
     private func trackHeader(name: String, icon: String, color: Color, volume: Double, muted: Bool, solo: Bool,
@@ -242,7 +257,7 @@ struct TakeClip: View {
     var body: some View {
         ZStack(alignment: .leading) {
           ForEach(take.playbackRegions) { region in
-            WaveformClip(name: take.name + (take.hidden ? " · video hidden" : ""), peaks: cropPeaks(take.peaks, region: region, sourceDuration: take.sourceDuration), color: Theme.video,
+            WaveformClip(name: take.name, peaks: cropPeaks(take.peaks, region: region, sourceDuration: take.sourceDuration), color: Theme.video,
                      muted: take.muted || (model.project.hasSolo && !take.solo), selected: model.selectedTrackID == take.id)
             .frame(width: max(2, region.duration * scale), height: rowHeight - 10)
             .offset(x: region.start * scale + max(-take.start * scale, drag))

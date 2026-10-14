@@ -27,9 +27,10 @@ struct StudioView: View {
                         if model.isConnected && (model.isRecording || model.project.takes.isEmpty) {
                             CameraPreview(session: model.capture.session)
                         } else if !model.project.takes.isEmpty {
-                            PlayerPreview(player: model.player)
+                            PlayerPreview(player: model.player).allowsHitTesting(false)
                         } else { emptyPreview }
-                        if model.isConnected && !model.isRecording && !model.project.takes.isEmpty {
+                        if model.isEditingScene, let scene = model.selectedScene { SceneCanvas(model: model, scene: scene) }
+                        if model.isConnected && !model.isRecording && !model.project.takes.isEmpty && !model.isEditingScene {
                             VStack { Spacer(); HStack { Spacer();
                                 CameraPreview(session: model.capture.session)
                                     .frame(width: 192, height: 108)
@@ -63,7 +64,7 @@ struct StudioView: View {
                 inspector.frame(width: 286)
             }.frame(minHeight: 360, maxHeight: .infinity)
             Divider().overlay(Theme.stroke)
-            TimelineView(model: model).frame(height: 328)
+            TimelineView(model: model).frame(height: 356)
             footer
         }
         .background(Theme.background)
@@ -102,7 +103,7 @@ struct StudioView: View {
             } label: { Label("Import backing", systemImage: "plus") }.fixedSize().disabled(!model.hasProject || model.locked)
             Button(action: model.exportVideo) { Label("Export video", systemImage: "square.and.arrow.up").padding(.horizontal, 8).padding(.vertical, 4) }
                 .buttonStyle(.borderedProminent).foregroundStyle(Theme.background)
-                .disabled(!model.hasVisibleVideo || model.locked || model.isBuilding)
+                .disabled(!model.canExportVideo || model.locked || model.isBuilding)
         }.padding(.horizontal, 22).padding(.vertical, 16)
     }
 
@@ -173,6 +174,17 @@ struct StudioView: View {
     private var inspector: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
+                Picker("Inspector", selection: $model.inspectorTab) {
+                    ForEach(InspectorTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented)
+                    .onChange(of: model.inspectorTab) { _, tab in
+                        if tab == .scene, model.selectedScene == nil,
+                           let scene = model.project.scene(at: model.playhead) ?? model.project.scenes?.first {
+                            model.selectScene(scene.id, seekToStart: false)
+                        }
+                    }
+                switch model.inspectorTab {
+                case .record:
                 HStack {
                     sectionLabel("RECORDING SETUP")
                     Spacer()
@@ -184,12 +196,30 @@ struct StudioView: View {
                 Button { showRouting = true } label: { Label("Neural DSP + BlackHole setup", systemImage: "info.circle").font(.system(size: 11)) }.buttonStyle(.plain).foregroundStyle(Theme.accent)
                 Divider()
                 layoutControls
+                Divider()
+                correctionControls
+                case .take:
                 if let take = model.selectedTake {
-                    Divider()
                     TakeInspector(model: model, take: take)
                 } else {
-                    Divider()
-                    correctionControls
+                    Text("Select a recorded take in the timeline to adjust its timing or audio.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.muted)
+                }
+                case .scene:
+                if !(model.project.scenes ?? []).isEmpty {
+                    Picker("Scene", selection: Binding(get: { model.selectedSceneID }, set: { id in if let id { model.selectScene(id) } })) {
+                        Text("Select a Scene").tag(nil as UUID?)
+                        ForEach(Array((model.project.scenes ?? []).enumerated()), id: \.element.id) { index, scene in
+                            Text(scene.title(number: index + 1)).tag(Optional(scene.id))
+                        }
+                    }.labelsHidden().disabled(model.locked)
+                }
+                if let scene = model.selectedScene {
+                    SceneInspector(model: model, scene: scene)
+                } else {
+                    Text("Drag across the timeline ruler, then choose Create Scene. Recording a take also creates a Scene for its range.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.muted).lineSpacing(4)
+                }
                 }
             }.padding(20)
         }.background(Theme.panel.opacity(0.65))
@@ -233,11 +263,11 @@ struct StudioView: View {
     }
     private var layoutControls: some View {
         Group {
-            sectionLabel("VIDEO ARRANGEMENT")
-            Picker("Layout", selection: Binding(get: { model.project.layout }, set: { value in model.edit { $0.layout = value } })) {
+            sectionLabel("NEW SCENES")
+            Picker("Default Scene layout", selection: Binding(get: { model.project.layout }, set: { value in model.edit { $0.layout = value } })) {
                 ForEach(VideoLayout.allCases, id: \.self) { Text($0.title).tag($0) }
             }.labelsHidden().disabled(!model.hasProject || model.locked)
-            Text("Overlapping takes appear together. Solo sections use the full frame.")
+            Text("Default arrangement for new Scenes. Select a Scene in the timeline to customize its videos.")
                 .font(.system(size: 11)).foregroundStyle(Theme.muted).lineSpacing(3)
         }
     }
