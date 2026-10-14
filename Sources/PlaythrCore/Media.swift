@@ -1,13 +1,31 @@
 @preconcurrency import AVFoundation
 
 public enum Media {
+    /// A regular file can still be a reference movie pointing to other local files.
+    static func localAsset(_ url: URL) async throws -> AVURLAsset {
+        try ProjectStore.validateRegularFile(url)
+        let asset = AVURLAsset(url: url, options: [
+            AVURLAssetReferenceRestrictionsKey: NSNumber(value: AVAssetReferenceRestrictions.forbidAll.rawValue)
+        ])
+        // Check containment explicitly before decoding or inserting tracks. The
+        // reference restriction option alone does not reject every reference movie.
+        for track in try await asset.load(.tracks) {
+            guard try await track.load(.isSelfContained) else {
+                throw PlaythrError.message("\(url.lastPathComponent) references media in another file. Import a self-contained media file.")
+            }
+        }
+        return asset
+    }
+
     public static func inspectAudio(_ url: URL) async throws -> (duration: Double, peaks: [Float]) {
-        let asset = AVURLAsset(url: url)
+        let asset = try await localAsset(url)
         guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
             throw PlaythrError.message("\(url.lastPathComponent) does not contain readable audio.")
         }
         let duration = try await asset.load(.duration).seconds
-        guard duration.isFinite, duration > 0 else { throw PlaythrError.message("Invalid media duration.") }
+        guard duration.isFinite, duration > 0, duration <= Project.maximumDuration else {
+            throw PlaythrError.message("Media duration must be positive and no longer than 24 hours.")
+        }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32,
@@ -21,15 +39,21 @@ public enum Media {
             if Task.isCancelled { reader.cancelReading(); throw CancellationError() }
             guard let data = CMSampleBufferGetDataBuffer(sample) else { continue }
             let size = CMBlockBufferGetDataLength(data)
+            guard size > 0, size.isMultiple(of: MemoryLayout<Float>.size) else {
+                throw PlaythrError.message("Invalid decoded audio buffer size.")
+            }
             var values = [Float](repeating: 0, count: size / MemoryLayout<Float>.size)
             let status = values.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(data, atOffset: 0, dataLength: size, destination: $0.baseAddress!) }
             guard status == noErr, let description = CMSampleBufferGetFormatDescription(sample),
-                  let format = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee else { continue }
+                  let format = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
+                  format.mSampleRate.isFinite, format.mSampleRate > 0 else { continue }
             let channels = max(1, Int(format.mChannelsPerFrame))
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds
+            guard time.isFinite else { continue }
             // Decimation is only for the display waveform; original audio stays intact.
             for frame in stride(from: 0, to: values.count / channels, by: 32) {
-                let index = min(peaks.count - 1, max(0, Int((time + Double(frame) / format.mSampleRate) / duration * Double(peaks.count))))
+                let fraction = min(1, max(0, (time + Double(frame) / format.mSampleRate) / duration))
+                let index = min(peaks.count - 1, Int(fraction * Double(peaks.count)))
                 for channel in 0..<channels { peaks[index] = max(peaks[index], min(1, abs(values[frame * channels + channel]))) }
             }
         }
@@ -38,11 +62,11 @@ public enum Media {
     }
 
     public static func inspectTake(_ url: URL) async throws -> Double {
-        let asset = AVURLAsset(url: url)
+        let asset = try await localAsset(url)
         let video = try await asset.loadTracks(withMediaType: .video)
         let audio = try await asset.loadTracks(withMediaType: .audio)
         let duration = try await asset.load(.duration).seconds
-        guard !video.isEmpty, !audio.isEmpty, duration.isFinite, duration > 0 else {
+        guard !video.isEmpty, !audio.isEmpty, duration.isFinite, duration > 0, duration <= Project.maximumDuration else {
             throw PlaythrError.message("This take does not contain both video and audio. Its original file was kept in Media.")
         }
         return duration
@@ -71,18 +95,24 @@ public enum CompositionBuilder {
     }
     public static func build(project: Project, store: ProjectStore) async throws -> BuiltComposition {
         try project.validate()
+        try store.validateMediaDirectory()
         let composition = AVMutableComposition()
         var mixes: [AVMutableAudioMixInputParameters] = []
         var videos: [VideoSource] = []
         for backing in project.tracks {
+            try Task.checkCancellation()
             guard !backing.playbackRegions.isEmpty else { continue }
-            let asset = AVURLAsset(url: try store.mediaURL(backing.file))
+            let asset = try await Media.localAsset(store.mediaURL(backing.file))
             guard let source = try await asset.loadTracks(withMediaType: .audio).first,
                   let destination = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
                 throw PlaythrError.message("Cannot load backing track \(backing.name).")
             }
             if backing.regions == nil {
                 let sourceRange = try await source.load(.timeRange)
+                guard sourceRange.start.seconds.isFinite, sourceRange.duration.seconds.isFinite,
+                      sourceRange.duration.seconds > 0, sourceRange.duration.seconds <= Project.maximumDuration else {
+                    throw PlaythrError.message("Invalid or oversized backing media duration.")
+                }
                 try destination.insertTimeRange(sourceRange, of: source, at: .zero)
             } else {
                 for region in backing.playbackRegions {
@@ -94,9 +124,10 @@ public enum CompositionBuilder {
             mixes.append(mix)
         }
         for take in project.takes {
+            try Task.checkCancellation()
             let regions = take.playbackRegions
             guard !regions.isEmpty else { continue }
-            let asset = AVURLAsset(url: try store.mediaURL(take.file))
+            let asset = try await Media.localAsset(store.mediaURL(take.file))
             let audioSegments = regions.compactMap { ClipSegment(region: $0, take: take, audio: true) }
             if !audioSegments.isEmpty {
                 guard let source = try await asset.loadTracks(withMediaType: .audio).first,
@@ -126,6 +157,9 @@ public enum CompositionBuilder {
         // Keep the media's exact duration. Rounding a 44.1 kHz backing track to our
         // edit timescale can leave a tiny uncovered tail that prevents video playback.
         let timelineDuration = CMTimeMaximum(composition.duration, time(project.duration))
+        guard timelineDuration.seconds.isFinite, (0...Project.maximumDuration).contains(timelineDuration.seconds) else {
+            throw PlaythrError.message("Project timelines must be no longer than 24 hours.")
+        }
         // Extend through muted/hidden material and any trailing silence.
         if CMTimeCompare(composition.duration, timelineDuration) < 0 {
             composition.insertEmptyTimeRange(CMTimeRange(start: composition.duration, end: timelineDuration))
@@ -139,17 +173,22 @@ public enum CompositionBuilder {
         let canvas = CGSize(width: 1920, height: 1080)
         // A real, continuous black video source is required. Empty layer instructions alone
         // cannot reliably render the audio-only gaps before, between, or after camera takes.
-        let backgroundURL = try await BlackBackground.ensure(in: store.mediaDirectory)
-        let backgroundAsset = AVURLAsset(url: backgroundURL)
+        let backgroundURL = try await BlackBackground.ensure(in: store)
+        let backgroundAsset = try await Media.localAsset(backgroundURL)
         guard let backgroundSource = try await backgroundAsset.loadTracks(withMediaType: .video).first,
               let backgroundTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
             throw PlaythrError.message("Cannot create the video background.")
         }
         let backgroundRange = try await backgroundSource.load(.timeRange)
+        guard backgroundRange.start.seconds.isFinite, backgroundRange.duration.seconds.isFinite,
+              (0.99...1.01).contains(backgroundRange.duration.seconds) else {
+            throw PlaythrError.message("Invalid video background. Remove the generated background file and reopen the project.")
+        }
         // Supply actual frames across the whole timeline. A stretched still can
         // preview correctly but export only its first few frames when no takes are visible.
         var backgroundCursor = CMTime.zero
         while CMTimeCompare(backgroundCursor, timelineDuration) < 0 {
+            try Task.checkCancellation()
             let remaining = CMTimeSubtract(timelineDuration, backgroundCursor)
             let length = CMTimeMinimum(backgroundRange.duration, remaining)
             try backgroundTrack.insertTimeRange(CMTimeRange(start: backgroundRange.start, duration: length), of: backgroundSource, at: backgroundCursor)
@@ -257,11 +296,11 @@ private final class ExportCancellation: @unchecked Sendable {
 }
 
 private enum BlackBackground {
-    static func ensure(in directory: URL) async throws -> URL {
+    static func ensure(in store: ProjectStore) async throws -> URL {
         // Use a new cache name so older two-frame backgrounds are not reused.
-        let url = directory.appendingPathComponent(".background-30fps.mov")
+        let url = try store.mediaURL("Media/.background-30fps.mov")
         if FileManager.default.fileExists(atPath: url.path) { return url }
-        let temporary = directory.appendingPathComponent(".background-\(UUID().uuidString).mov")
+        let temporary = try store.mediaURL("Media/.background-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: temporary) }
         let writer = try AVAssetWriter(outputURL: temporary, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 32, AVVideoHeightKey: 18])
@@ -294,6 +333,6 @@ private enum BlackBackground {
         guard writer.status == .completed else { throw writer.error ?? PlaythrError.message("Cannot finalize background frame.") }
         do { try FileManager.default.moveItem(at: temporary, to: url) }
         catch { if !FileManager.default.fileExists(atPath: url.path) { throw error } }
-        return url
+        return try store.mediaURL("Media/.background-30fps.mov")
     }
 }

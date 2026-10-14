@@ -277,8 +277,9 @@ struct TakeClip: View {
 
 private func cropPeaks(_ peaks: [Float], region: TrackRegion, sourceDuration: Double) -> [Float] {
     guard !peaks.isEmpty, sourceDuration > 0 else { return [] }
-    let start = max(0, min(peaks.count - 1, Int(region.sourceIn / sourceDuration * Double(peaks.count))))
-    let end = min(peaks.count, Int((region.sourceIn + region.duration) / sourceDuration * Double(peaks.count)))
+    // Clamp before converting: tiny source durations can otherwise overflow Int.
+    let start = min(peaks.count - 1, Int(min(1, max(0, region.sourceIn / sourceDuration)) * Double(peaks.count)))
+    let end = Int(min(1, max(0, (region.sourceIn + region.duration) / sourceDuration)) * Double(peaks.count))
     return Array(peaks[start..<max(start + 1, end)])
 }
 

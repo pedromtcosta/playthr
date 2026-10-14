@@ -102,6 +102,8 @@ Song.playthr/
 
 Import copies media into the project; Sound Razor's originals are never modified. Copy or move the entire `.playthr` package to move the project. In Finder, **Show Package Contents** reveals its files. Saving atomically replaces the manifest. Exports use a temporary file and are moved to the chosen filename only after success; existing exports are not overwritten.
 
+Projects use regular media files contained in their `Media` directory. Linked project files, special files, and reference movies that load media from another file are rejected, including during recovery and background rendering. To bound processing of shared projects, timelines and source media are limited to 24 hours, `project.json` to 16 MiB, and each Sound Razor metadata JSON file to 1 MiB.
+
 **Project → Recover takes** finds readable MOV files that are not listed in the manifest, including finalized recordings whose manifest save failed. Recovered takes are placed at the current playhead because the original start position may be unknown. This also finds deliberately removed takes. Original files are kept even if recovery fails. Fragmented recording improves the chances of recovery after interruption, but an unfinished recording is not guaranteed to be readable.
 
 The app reports capture/write failures and writer backpressure drops. Keep enough free disk space: original takes use H.264 video and uncompressed stereo audio. A disconnected device, disk failure, forced quit or power loss can interrupt capture. Normal window close and Quit are blocked while recording, saving, importing or exporting.

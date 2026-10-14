@@ -90,6 +90,8 @@ public struct Take: Codable, Identifiable, Equatable, Sendable {
 }
 
 public struct Project: Codable, Equatable, Sendable {
+    /// Bound work when a shared manifest supplies its own timeline or media lengths.
+    public static let maximumDuration: Double = 24 * 60 * 60
     public var schemaVersion = 1
     public var id = UUID()
     public var name: String
@@ -115,10 +117,14 @@ public struct Project: Codable, Equatable, Sendable {
               Set(tracks.map(\.id) + takes.map(\.id)).count == tracks.count + takes.count else {
             throw PlaythrError.message("The project contains invalid settings or duplicate clip IDs.")
         }
+        guard duration.isFinite, (0...Self.maximumDuration).contains(duration) else {
+            throw PlaythrError.message("Project timelines must be no longer than 24 hours.")
+        }
         for track in tracks {
             try validateMediaPath(track.file)
             try validateRegions(track.regions, sourceIn: 0, duration: track.duration)
-            guard track.duration.isFinite, track.duration > 0, track.volume.isFinite, (0...2).contains(track.volume),
+            guard track.duration.isFinite, track.duration > 0, track.duration <= Self.maximumDuration,
+                  track.volume.isFinite, (0...2).contains(track.volume),
                   track.peaks.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else {
                 throw PlaythrError.message("Invalid backing track: \(track.name).")
             }
@@ -129,6 +135,8 @@ public struct Project: Codable, Equatable, Sendable {
             let numbers = [take.start, take.sourceIn, take.duration, take.sourceDuration, take.audioOffset,
                            take.volume, take.placement.x, take.placement.y, take.placement.width, take.placement.height]
             guard numbers.allSatisfy(\.isFinite), take.start >= 0, take.sourceIn >= 0, take.duration > 0,
+                  take.start <= Self.maximumDuration, take.sourceDuration > 0, take.sourceDuration <= Self.maximumDuration,
+                  take.layer < Int.max,
                   take.sourceIn + take.duration <= take.sourceDuration + 0.001,
                   (0...2).contains(take.volume), abs(take.audioOffset) <= 2,
                   (0...1).contains(take.placement.x), (0...1).contains(take.placement.y),
@@ -149,7 +157,7 @@ public enum PlaythrError: LocalizedError {
 public func validateMediaPath(_ path: String) throws {
     let components = path.split(separator: "/", omittingEmptySubsequences: false)
     guard components.count == 2, components[0] == "Media", !components[1].isEmpty,
-          components[1] != ".", components[1] != "..", !path.contains("\\") else {
+          components[1] != ".", components[1] != "..", !path.contains("\\"), !path.contains("\u{0}") else {
         throw PlaythrError.message("Invalid project media path: \(path).")
     }
 }

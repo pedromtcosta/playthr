@@ -11,20 +11,24 @@ public struct SoundRazorImport {
     public static let audioExtensions: Set<String> = ["wav", "aif", "aiff", "mp3", "m4a", "aac", "caf", "flac"]
 
     public static func inspect(_ directory: URL) throws -> SoundRazorImport {
+        guard directory.isFileURL else { throw PlaythrError.message("Choose a local stems folder.") }
         let fm = FileManager.default
         let child = directory.appendingPathComponent("stems", isDirectory: true)
         let folder = fm.fileExists(atPath: child.path) ? child : directory
+        guard try fm.attributesOfItem(atPath: folder.path)[.type] as? FileAttributeType == .typeDirectory else {
+            throw PlaythrError.message("Choose a real stems folder, not a link.")
+        }
         let songFolder = directory.lastPathComponent == "stems" ? directory.deletingLastPathComponent() : directory
         let metadataURL = songFolder.appendingPathComponent("metadata.json")
         var title = songFolder.lastPathComponent
         if fm.fileExists(atPath: metadataURL.path) {
-            let metadata = try JSONSerialization.jsonObject(with: Data(contentsOf: metadataURL)) as? [String: Any]
+            let metadata = try JSONSerialization.jsonObject(with: ProjectStore.readJSON(metadataURL, maximumBytes: 1024 * 1024)) as? [String: Any]
             if let value = metadata?["title"] as? String, !value.isEmpty { title = value }
         }
         var settings: [String: Any] = [:]
         let settingsURL = folder.appendingPathComponent("separation.json")
         if fm.fileExists(atPath: settingsURL.path) {
-            guard let object = try JSONSerialization.jsonObject(with: Data(contentsOf: settingsURL)) as? [String: Any] else {
+            guard let object = try JSONSerialization.jsonObject(with: ProjectStore.readJSON(settingsURL, maximumBytes: 1024 * 1024)) as? [String: Any] else {
                 throw PlaythrError.message("Sound Razor’s separation.json is not a JSON object.")
             }
             settings = object

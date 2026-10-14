@@ -298,6 +298,58 @@ final class MediaTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: source), originalMedia)
     }
 
+    func testSecurityRejectsBackgroundLinkedOutsideProject() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("PlaythrBackground-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let store = try ProjectStore.create(at: parent.appendingPathComponent("Session.playthr"), name: "Linked background")
+        let outside = parent.appendingPathComponent("private.mov")
+        try await makeTake(url: outside, red: true)
+        try FileManager.default.createSymbolicLink(at: store.mediaDirectory.appendingPathComponent(".background-30fps.mov"), withDestinationURL: outside)
+        var project = Project()
+        project.tracks = [try await makeBacking(url: store.mediaURL("Media/backing.wav"))]
+        project.enableScenes()
+        do {
+            _ = try await CompositionBuilder.build(project: project, store: store)
+            XCTFail("A linked background must not expose a movie outside the project")
+        } catch { }
+    }
+
+    func testSecurityRejectsExternalMediaReferences() async throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("PlaythrReferences-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let store = try ProjectStore.create(at: parent.appendingPathComponent("Session.playthr"), name: "Reference movie")
+        let outside = parent.appendingPathComponent("private.mov")
+        try await makeTake(url: outside, red: true)
+        let reference = try store.mediaURL("Media/reference.mov")
+        let movie = AVMovie(url: outside)
+        try movie.writeHeader(to: reference, fileType: .mov, options: .truncateDestinationToMovieHeaderOnly)
+        // This fixture is a real reference movie, readable with AVFoundation's default policy.
+        let unrestricted = AVURLAsset(url: reference)
+        let duration = try await unrestricted.load(.duration).seconds
+        XCTAssertGreaterThan(duration, 1)
+        let referenceTracks = try await unrestricted.load(.tracks)
+        XCTAssertFalse(referenceTracks.isEmpty)
+        for track in referenceTracks {
+            let contained = try await track.load(.isSelfContained)
+            XCTAssertFalse(contained, "The fixture must reference the separate source movie")
+        }
+        XCTAssertLessThan(try Data(contentsOf: reference).count, try Data(contentsOf: outside).count)
+        do {
+            _ = try await Media.inspectTake(reference)
+            XCTFail("Inspection must reject media data stored outside the container")
+        } catch { }
+        do {
+            _ = try await Media.inspectAudio(reference)
+            XCTFail("Waveform analysis must reject external media references")
+        } catch { }
+        var project = Project()
+        project.takes = [Take(name: "Reference", file: "Media/reference.mov", start: 0, duration: duration)]
+        do {
+            _ = try await CompositionBuilder.build(project: project, store: store)
+            XCTFail("Preview and export must reject external media references")
+        } catch { }
+    }
+
     private func makeTake(url: URL, red: Bool, videoDelay: Double = 0, switchColorAt: Double? = nil) async throws {
         let anchor = CMTime(seconds: 100, preferredTimescale: 48000)
         let writer = try TakeWriter(url: url, anchor: anchor, width: 320, height: 180)
